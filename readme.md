@@ -1,4 +1,4 @@
-# pkg name
+# MySQL client
 
 Quick config to connect MySQL from environment vars.  
 Wrapped [go-sql-driver/mysql](
