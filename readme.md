@@ -25,3 +25,11 @@ if qr.Error != nil {
 
 ````
 Detail in [mysql_test.go](./mysql_test.go).
+
+## Useful commands
+
+````mysql
+CREATE DATABASE `database0` /*!40100 DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci */ /*!80016 DEFAULT ENCRYPTION='N' */;
+
+SELECT `Host`, `User`, `plugin`, `Super_priv` FROM mysql.user;
+````
