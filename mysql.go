@@ -7,8 +7,9 @@ import (
 	"os"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
-	"github.com/jinzhu/gorm"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 // ConnectGORM initializes a new MySQL client (sent a Ping)
@@ -16,14 +17,19 @@ func ConnectViaGORM(config Config) (*gorm.DB, error) {
 	if config.Host == "" || config.Port == "" {
 		return nil, errors.New("empty config")
 	}
-	db, err := gorm.Open("mysql", config.ToDataSourceURL())
+	db, err := gorm.Open(
+		mysql.Open(config.ToDataSourceURL()),
+		&gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		return nil, err
 	}
-	if db.DB() != nil {
-		configConnectionsPool(db.DB())
+	sqlDb, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("unexpected db_DB(): %v", err)
 	}
-	db.LogMode(false)
+	if sqlDb != nil {
+		configConnectionsPool(sqlDb)
+	}
 	return db, nil
 }
 
