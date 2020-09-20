@@ -156,6 +156,16 @@ func TestMysql(t *testing.T) {
 			row.Client.Username, cli1.Username)
 	}
 
+	// update table has foreign key
+
+	t.Logf("project: %#v", row)
+	row.Description = "updated description at " + time.Now().Format(time.RFC3339)
+	row.Client = nil
+	qr := repo0.DB.Debug().Save(&row)
+	if qr.Error != nil {
+		t.Error(qr.Error)
+	}
+
 	// select via official Go database/sql
 
 	client2, err := Connect(LoadEnvConfig())
