@@ -1,11 +1,14 @@
 package mysql
 
 import (
-	"crypto/rand"
+	cryptoRand "crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"math/rand"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -198,7 +201,7 @@ func TestMysql(t *testing.T) {
 }
 func genUUID() string {
 	b := make([]byte, 16)
-	_, _ = rand.Read(b)
+	_, _ = cryptoRand.Read(b)
 	r := hex.EncodeToString(b)
 	return r
 }
@@ -241,5 +244,144 @@ func TestGormV2(t *testing.T) {
 	}
 	if loadedCli2.LastModified != newValDupCli2 {
 		t.Error("batch upsert fail")
+	}
+}
+
+type testGift struct {
+	Id       int64     `gorm:"primary_key;AUTO_INCREMENT"`
+	GiftType string    `gorm:"type:varchar(191);index:idx_priority"`
+	IsUsed   bool      `gorm:"index:idx_priority"`
+	CreateAt time.Time `gorm:"index:idx_priority"`
+	UsedAt   time.Time
+}
+
+type testGiftSummary struct {
+	GiftType   string `gorm:"primary_key;type:varchar(191)"`
+	NUsedGifts int64
+}
+
+// takeAGift is a transaction that updates a gift to used and update the number
+// of used gifts in other table
+func takeAGift(giftType string, isDebug bool) (giftId int64, retErr error) {
+	db := repo0.DB
+	if isDebug {
+		db = db.Debug()
+	}
+	tx := db.Begin(&sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: false})
+	if tx.Error != nil {
+		return 0, fmt.Errorf("beginTx: %v", tx.Error)
+	}
+	var takenGift testGift
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Table("test_gifts").
+		Where(map[string]interface{}{"gift_type": giftType, "is_used": false}).
+		Order("create_at ASC").
+		First(&takenGift).Error
+	if err != nil {
+		tx.Rollback()
+		return 0, fmt.Errorf("select gift: %v", err)
+	}
+	takenGift.IsUsed, takenGift.UsedAt = true, time.Now()
+	err = tx.Save(&takenGift).Error
+	if err != nil {
+		tx.Rollback()
+		return 0, fmt.Errorf("update gift: %v", err)
+	}
+	var summary testGiftSummary
+	err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where(&testGiftSummary{GiftType: giftType}).
+		First(&summary).Error
+	if err != nil {
+		tx.Rollback()
+		return 0, fmt.Errorf("select summary: %v", err)
+	}
+	summary.NUsedGifts += 1
+	err = tx.Save(&summary).Error
+	if err != nil {
+		tx.Rollback()
+		return 0, fmt.Errorf("update summary: %v", err)
+	}
+	err = tx.Commit().Error
+	if err != nil {
+		tx.Rollback()
+		return 0, fmt.Errorf("commit: %v", err)
+	}
+	return takenGift.Id, nil
+}
+
+func TestGormTransaction(t *testing.T) {
+	// create table if needed
+	if err := repo0.DB.AutoMigrate(&testGift{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo0.DB.AutoMigrate(&testGiftSummary{}); err != nil {
+		t.Fatal(err)
+	}
+	//truncate
+	db := repo0.DB.Debug()
+	if err := db.Where("1=1").Delete(&testGift{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Where("1=1").Delete(&testGiftSummary{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	//
+	const giftType0 = "giftType0"
+	const nGifts = 500
+	rand.Seed(time.Now().UnixNano())
+	gifts := make([]testGift, nGifts)
+	for i := 0; i < nGifts; i++ {
+		gifts[i] = testGift{
+			Id: int64(i + 1), GiftType: giftType0, IsUsed: false,
+			CreateAt: time.Unix(rand.Int63n(31536000), 0),
+			UsedAt:   time.Unix(0, 0)}
+	}
+	qr := repo0.DB.Create(gifts)
+	if qr.Error != nil || qr.RowsAffected != nGifts {
+		t.Fatalf("error create gifts: %v, %v", qr.Error, qr.RowsAffected)
+	}
+	t.Logf("created %v gifts", nGifts)
+	if err := db.Create(&testGiftSummary{GiftType: giftType0}).Error; err != nil {
+		t.Fatalf("error create summary: %v", err)
+	}
+	//
+	const nGiftsToTake = 200
+	wg := &sync.WaitGroup{}
+	takenGifts := make(map[int64]bool)
+	mutex := &sync.Mutex{}
+	for i := 0; i < nGiftsToTake; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Add(-1)
+			giftId, err := takeAGift(giftType0, i == 0)
+			if err != nil {
+				t.Errorf("error takeAGift: %v", err)
+			}
+			mutex.Lock()
+			takenGifts[giftId] = true
+			mutex.Unlock()
+		}(i)
+	}
+	wg.Wait()
+
+	nUsedsM1 := int64(len(takenGifts))
+	var nUsedsM2 int64
+	stdSqlDB, _ := repo0.DB.DB()
+	row := stdSqlDB.QueryRow(`SELECT COUNT(*) FROM test_gifts WHERE is_used=true`)
+	err := row.Scan(&nUsedsM2)
+	if err != nil {
+		t.Errorf("error Scan count: %v", err)
+	}
+	var tmp testGiftSummary
+	if err := db.First(
+		&testGiftSummary{GiftType: giftType0}).First(&tmp).Error; err != nil {
+		t.Errorf("error count used gifts: %v", err)
+	}
+	nUsedsM3 := tmp.NUsedGifts
+	if nUsedsM1 != nGiftsToTake ||
+		nUsedsM2 != nGiftsToTake ||
+		nUsedsM3 != nGiftsToTake {
+		t.Errorf("error inconsistent nTakenGifts: %v, %v, %v, %v",
+			nGiftsToTake, nUsedsM1, nUsedsM2, nUsedsM3)
 	}
 }
