@@ -44,7 +44,8 @@ func (r myRepo) CreateClientsIgnore(clients []testClient) (int64, error) {
 func (r myRepo) CreateClientsUpsert(clients []testClient) error {
 	qr := r.DB.Debug().
 		Clauses(clause.OnConflict{
-			DoUpdates: clause.AssignmentColumns([]string{"last_modified"}),
+			DoUpdates: clause.AssignmentColumns([]string{
+				"last_modified", "phone"}),
 		}).
 		Create(clients)
 	if qr.Error != nil {
@@ -209,13 +210,13 @@ func genUUID() string {
 func TestGormV2(t *testing.T) {
 	dupCli := testClient{
 		Id:           "testBatchDupId",
-		LastModified: time.Now().String(),
+		LastModified: time.Now().Format(time.RFC3339Nano),
 	}
 	repo0.CreateClient(dupCli)
 	nAffecteds, err := repo0.CreateClientsIgnore([]testClient{
-		{Id: "testBatchId0_" + genUUID()},
+		{Id: "testBatchId00_" + genUUID()},
 		dupCli,
-		{Id: "testBatchId2_" + genUUID()},
+		{Id: "testBatchId02_" + genUUID()},
 	})
 	if err != nil {
 		t.Error(err)
@@ -226,13 +227,15 @@ func TestGormV2(t *testing.T) {
 
 	dupCli2 := testClient{
 		Id:           "testBatchDupIdUpsert",
-		LastModified: "oldValue",
+		Username:     "old",
+		Phone:        "old",
+		LastModified: time.Now().Format(time.RFC3339Nano),
 	}
 	repo0.CreateClient(dupCli2)
-	newValDupCli2 := time.Now().Format(time.RFC3339Nano)
+	newValDupCli2 := time.Now().Format(time.RFC3339Nano) + "new"
 	err2 := repo0.CreateClientsUpsert([]testClient{
 		{Id: "testBatchId10_" + genUUID()},
-		{Id: dupCli2.Id, LastModified: newValDupCli2},
+		{Id: dupCli2.Id, Username: "new", Phone: "new", LastModified: newValDupCli2},
 		{Id: "testBatchId12_" + genUUID()},
 	})
 	if err2 != nil {
@@ -242,8 +245,11 @@ func TestGormV2(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	if loadedCli2.LastModified != newValDupCli2 {
-		t.Error("batch upsert fail")
+	if loadedCli2.Phone != "new" || loadedCli2.LastModified != newValDupCli2 {
+		t.Error("batch upsert fail: not update")
+	}
+	if loadedCli2.Username != "old" {
+		t.Error("batch upsert fail: update wrong column")
 	}
 }
 
