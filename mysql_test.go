@@ -54,8 +54,8 @@ func (r myRepo) CreateClientsUpsert(clients []testClient) error {
 	return nil
 }
 
-func (r myRepo) ReadClient(id string) (testClient, error) {
-	ret := testClient{Id: id}
+func (r myRepo) ReadClient(username string) (testClient, error) {
+	ret := testClient{Username: username}
 	qr := r.DB.First(&ret)
 	return ret, qr.Error
 }
@@ -68,9 +68,10 @@ func (r myRepo) CreateProject(prj testProject) error {
 	return nil
 }
 
-func (r myRepo) ReadProject(clientId string) (testProject, error) {
+// read last project of input username
+func (r myRepo) ReadProject(username string) (testProject, error) {
 	qrJoin := r.DB
-	qrJoin = qrJoin.Where(&testProject{ClientId: clientId}).Order("id ASC")
+	qrJoin = qrJoin.Where(&testProject{ClientUsername: username}).Order("id DESC")
 	qrJoin = qrJoin.Preload("Client")
 	var row testProject
 	ret := qrJoin.First(&row) // can return record not found
@@ -79,8 +80,7 @@ func (r myRepo) ReadProject(clientId string) (testProject, error) {
 
 // data definition: table test_clients
 type testClient struct {
-	Id              string `gorm:"type:varchar(191);primary_key"`
-	Username        string `gorm:"type:varchar(191);unique_index"`
+	Username        string `gorm:"type:varchar(191);primary_key"`
 	HashedPassword  string `json:"-"`
 	Phone           string `gorm:"type:varchar(191)"`
 	Email           string `gorm:"type:varchar(191)"`
@@ -94,8 +94,8 @@ type testClient struct {
 type testProject struct {
 	Id int64 `gorm:"primary_key;AUTO_INCREMENT"`
 
-	ClientId string
-	Client   *testClient `gorm:"constraint:ClientId,OnUpdate:NO ACTION,OnDelete:NO ACTION;"`
+	ClientUsername string      // magic field name foreign key
+	Client         *testClient `gorm:"constraint:testClient,OnUpdate:NO ACTION,OnDelete:NO ACTION;"`
 
 	Name      string
 	Address   string
@@ -126,43 +126,49 @@ func TestConfig_ToDataSourceURL(t *testing.T) {
 func TestMysql(t *testing.T) {
 	// init: create tables
 
-	mErr := repo0.DB.AutoMigrate(&testClient{})
+	mErr := repo0.DB.Debug().AutoMigrate(&testClient{})
 	if mErr != nil {
 		t.Error(mErr)
 	}
-	mErr = repo0.DB.AutoMigrate(&testProject{})
+	mErr = repo0.DB.Debug().AutoMigrate(&testProject{})
 	if mErr != nil {
 		t.Error(mErr)
 	}
 
 	// insert and select join via gorm
 
-	cid1 := "e6b84aa6-83ed-4a9d-8f41-c43a2da03e85"
-	cli1 := testClient{Id: cid1, FullName: "Đào Thanh Tùng", Username: "tungdt"}
+	user1 := "tungdt"
+	cli1 := testClient{Username: user1, Phone: "84396xxx527",
+		FullName: "Đào Thanh Tùng", DateOfBirth: "1991-08-20"}
 	repo0.CreateClient(cli1)
-	repo0.CreateClient(testClient{FullName: "Đào Thị Lán", Phone: "097xxx8543",
-		Id: "12a535ea-a105-452d-b457-8c3bb66a4d25"})
-	repo0.CreateProject(testProject{Name: "prj1: marry cli1", ClientId: cid1,
-		Deadline: time.Unix(0, 0)})
-	repo0.CreateProject(testProject{Name: "prj2", ClientId: cid1,
+
+	repo0.CreateClient(testClient{Username: "landt",
+		FullName: "Đào Thị Lán", Phone: "097xxx8543"})
+
+	repo0.CreateProject(testProject{Name: "prj1: forget ",
+		ClientUsername: user1, Deadline: time.Unix(0, 0)})
+	repo0.CreateProject(testProject{Name: "prj2", ClientUsername: user1,
 		Deadline: time.Unix(0, 0), ValueVNDs: 30000})
 
-	err := repo0.CreateProject(testProject{Name: "prj3", ClientId: "invalidCliId",
-		Deadline: time.Unix(0, 0)})
+	err := repo0.CreateProject(testProject{Name: "prj3",
+		ClientUsername: "invalidCli", Deadline: time.Unix(0, 0)})
 	if err == nil ||
 		!strings.Contains(err.Error(), "constraint fail") {
 		t.Errorf("real: %v, expected: foreign key error", err)
 	}
 
-	row, err := repo0.ReadProject(cid1)
-	if row.Client.Username != cli1.Username {
+	row, err := repo0.ReadProject(user1)
+	if err != nil {
+		t.Errorf("error ReadProject: %v", err)
+	}
+	t.Logf("read project: client: %#v, project: %#v", row.Client, row)
+	if row.Client.DateOfBirth != cli1.DateOfBirth {
 		t.Errorf("join row: real: %v, expected: %v",
-			row.Client.Username, cli1.Username)
+			row.Client.DateOfBirth, cli1.DateOfBirth)
 	}
 
 	// update table has foreign key
 
-	t.Logf("project: %#v", row)
 	row.Description = "updated description at " + time.Now().Format(time.RFC3339)
 	row.Client = nil
 	qr := repo0.DB.Debug().Save(&row)
@@ -177,7 +183,7 @@ func TestMysql(t *testing.T) {
 		t.Errorf("error Connect: %v", err)
 	}
 	rows, err := client2.Query(`
-		SELECT id, full_name, username, phone
+		SELECT username, full_name, phone
 		FROM test_clients LIMIT 2;
 	`)
 	if err != nil {
@@ -187,14 +193,13 @@ func TestMysql(t *testing.T) {
 	nRows := 0
 	for rows.Next() {
 		nRows += 1
-		var id, full_name, username, phone string
-		err = rows.Scan(&id, &full_name, &username, &phone)
+		var full_name, username, phone string
+		err = rows.Scan(&username, &full_name, &phone)
 		if err != nil {
 			t.Errorf("error rows Scan: %v", err)
 			continue
 		}
-		t.Logf("client: %v, %v, %v, %v",
-			id, full_name, username, phone)
+		t.Logf("client: %v, %v, %v", username, full_name, phone)
 	}
 	if nRows < 2 {
 		t.Errorf("nRows: real: %v, expected: 2", nRows)
@@ -209,14 +214,14 @@ func genUUID() string {
 
 func TestGormV2(t *testing.T) {
 	dupCli := testClient{
-		Id:           "testBatchDupId",
+		Username:     "testBatchDupKey",
 		LastModified: time.Now().Format(time.RFC3339Nano),
 	}
 	repo0.CreateClient(dupCli)
 	nAffecteds, err := repo0.CreateClientsIgnore([]testClient{
-		{Id: "testBatchId00_" + genUUID()},
+		{Username: "testBatchId00_" + genUUID()},
 		dupCli,
-		{Id: "testBatchId02_" + genUUID()},
+		{Username: "testBatchId02_" + genUUID()},
 	})
 	if err != nil {
 		t.Error(err)
@@ -226,29 +231,28 @@ func TestGormV2(t *testing.T) {
 	}
 
 	dupCli2 := testClient{
-		Id:           "testBatchDupIdUpsert",
-		Username:     "old",
+		Username:     "testBatchDupIdUpsert",
 		Phone:        "old",
 		LastModified: time.Now().Format(time.RFC3339Nano),
 	}
 	repo0.CreateClient(dupCli2)
 	newValDupCli2 := time.Now().Format(time.RFC3339Nano) + "new"
 	err2 := repo0.CreateClientsUpsert([]testClient{
-		{Id: "testBatchId10_" + genUUID()},
-		{Id: dupCli2.Id, Username: "new", Phone: "new", LastModified: newValDupCli2},
-		{Id: "testBatchId12_" + genUUID()},
+		{Username: "testBatchId10_" + genUUID()},
+		{Username: dupCli2.Username, Phone: "old", LastModified: newValDupCli2},
+		{Username: "testBatchId12_" + genUUID()},
 	})
 	if err2 != nil {
 		t.Error(err2)
 	}
-	loadedCli2, err := repo0.ReadClient(dupCli2.Id)
+	loadedCli2, err := repo0.ReadClient(dupCli2.Username)
 	if err != nil {
 		t.Error(err)
 	}
-	if loadedCli2.Phone != "new" || loadedCli2.LastModified != newValDupCli2 {
+	if loadedCli2.LastModified != newValDupCli2 {
 		t.Error("batch upsert fail: not update")
 	}
-	if loadedCli2.Username != "old" {
+	if loadedCli2.Phone != "old" {
 		t.Error("batch upsert fail: update wrong column")
 	}
 }

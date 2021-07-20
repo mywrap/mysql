@@ -6,4 +6,4 @@ go vet ./...
 # Run all unittests
 source env.sh
 go clean -testcache &&\
-    go test -v ./... | grep FAIL -B 1 -A 1
+    go test -v ./... | grep FAIL -B 5 -A 5
