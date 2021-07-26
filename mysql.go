@@ -81,6 +81,6 @@ type Config struct {
 
 func (c Config) ToDataSourceURL() string {
 	return fmt.Sprintf(
-		"%v:%v@tcp(%v:%v)/%v?charset=utf8mb4&parseTime=True&loc=Local",
+		"%v:%v@tcp(%v:%v)/%v?charset=utf8mb4&parseTime=True&loc=UTC",
 		c.Username, c.Password, c.Host, c.Port, c.Database)
 }
