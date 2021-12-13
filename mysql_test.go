@@ -270,8 +270,8 @@ type testGiftSummary struct {
 	NUsedGifts int64
 }
 
-// takeAGift is a transaction that updates a gift to used and update the number
-// of used gifts in other table
+// takeAGift is a transaction that updates a gift field `is_used` and update the
+// number of used gifts in another table
 func takeAGift(giftType string, isDebug bool) (giftId int64, retErr error) {
 	db := repo0.DB
 	if isDebug {
@@ -343,7 +343,7 @@ func TestGormTransaction(t *testing.T) {
 	for i := 0; i < nGifts; i++ {
 		gifts[i] = testGift{
 			Id: int64(i + 1), GiftType: giftType0, IsUsed: false,
-			CreateAt: time.Unix(rand.Int63n(31536000), 0),
+			CreateAt: time.Now(),
 			UsedAt:   time.Unix(0, 0)}
 	}
 	qr := repo0.DB.Create(gifts)
@@ -354,7 +354,8 @@ func TestGormTransaction(t *testing.T) {
 	if err := db.Create(&testGiftSummary{GiftType: giftType0}).Error; err != nil {
 		t.Fatalf("error create summary: %v", err)
 	}
-	//
+
+	t.Log("--------------------------------------------------------------")
 	const nGiftsToTake = 200
 	wg := &sync.WaitGroup{}
 	takenGifts := make(map[int64]bool)
@@ -363,9 +364,10 @@ func TestGormTransaction(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Add(-1)
-			giftId, err := takeAGift(giftType0, i == 0)
+			giftId, err := takeAGift(giftType0, i == 100) // only print query debug for gift id 100
 			if err != nil {
-				t.Errorf("error takeAGift: %v", err)
+				t.Logf("failed takeAGift: %v", err)
+				return
 			}
 			mutex.Lock()
 			takenGifts[giftId] = true
@@ -374,11 +376,11 @@ func TestGormTransaction(t *testing.T) {
 	}
 	wg.Wait()
 
-	nUsedsM1 := int64(len(takenGifts))
-	var nUsedsM2 int64
+	nUsedsByCountMemory := int64(len(takenGifts))
+	nUsedsByCountTable := int64(0)
 	stdSqlDB, _ := repo0.DB.DB()
 	row := stdSqlDB.QueryRow(`SELECT COUNT(*) FROM test_gifts WHERE is_used=true`)
-	err := row.Scan(&nUsedsM2)
+	err := row.Scan(&nUsedsByCountTable)
 	if err != nil {
 		t.Errorf("error Scan count: %v", err)
 	}
@@ -387,11 +389,16 @@ func TestGormTransaction(t *testing.T) {
 		&testGiftSummary{GiftType: giftType0}).First(&tmp).Error; err != nil {
 		t.Errorf("error count used gifts: %v", err)
 	}
-	nUsedsM3 := tmp.NUsedGifts
-	if nUsedsM1 != nGiftsToTake ||
-		nUsedsM2 != nGiftsToTake ||
-		nUsedsM3 != nGiftsToTake {
-		t.Errorf("error inconsistent nTakenGifts: %v, %v, %v, %v",
-			nGiftsToTake, nUsedsM1, nUsedsM2, nUsedsM3)
+	nUsedsBySummaryTable := tmp.NUsedGifts
+
+	t.Logf("nTries %v, nUsedsByCountMemory %v, nUsedsByCountTable %v, nUsedsBySummaryTable %v",
+		nGiftsToTake, nUsedsByCountMemory, nUsedsByCountTable, nUsedsBySummaryTable)
+	// nUsedsByCountTable must equal to nUsedsByCountMemory and
+	// nUsedsBySummaryTable (but can be smaller than nTries because
+	// some transaction fail and roll back)
+	if nUsedsByCountTable != nUsedsByCountMemory ||
+		nUsedsByCountTable != nUsedsBySummaryTable {
+		t.Errorf("error inconsistent nTakenGifts: nUsedsByCountMemory %v, nUsedsByCountTable %v, nUsedsBySummaryTable %v",
+			nUsedsByCountMemory, nUsedsByCountTable, nUsedsBySummaryTable)
 	}
 }
