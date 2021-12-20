@@ -81,24 +81,24 @@ func (r myRepo) ReadProject(username string) (testProject, error) {
 // data definition: table test_clients
 type testClient struct {
 	Username        string `gorm:"type:varchar(191);primary_key"`
-	HashedPassword  string `json:"-"`
+	HashedPassword  string `gorm:"type:varchar(191)" json:"-"`
 	Phone           string `gorm:"type:varchar(191)"`
 	Email           string `gorm:"type:varchar(191)"`
 	IsVerifiedEmail bool
-	FullName        string
-	DateOfBirth     string // YYYY-MM-DD
-	LastModified    string
+	FullName        string `gorm:"type:varchar(191)"`
+	DateOfBirth     string `gorm:"type:varchar(191)"` // YYYY-MM-DD
+	LastModified    string `gorm:"type:varchar(191)"`
 }
 
 // data definition: table test_projects
 type testProject struct {
 	Id int64 `gorm:"primary_key;AUTO_INCREMENT"`
 
-	ClientUsername string      // magic field name foreign key
-	Client         *testClient `gorm:"constraint:testClient,OnUpdate:NO ACTION,OnDelete:NO ACTION;"`
+	ClientUsername string      `gorm:"type:varchar(191)"` // this field name follows gorm foreign key convention
+	Client         *testClient `gorm:"constraint:fk_test_projects_client_username,OnUpdate:NO ACTION,OnDelete:NO ACTION;"`
 
-	Name      string
-	Address   string
+	Name      string `gorm:"type:varchar(191)"`
+	Address   string `gorm:"type:varchar(1024)"`
 	ValueVNDs float64
 	Deadline  time.Time
 
