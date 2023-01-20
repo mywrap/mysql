@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -12,7 +13,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// ConnectGORM initializes a new MySQL client (sent a Ping)
+// ConnectViaGORM initializes a new MySQL client (sent a Ping)
 func ConnectViaGORM(config Config) (*gorm.DB, error) {
 	if config.Host == "" || config.Port == "" {
 		return nil, errors.New("empty config")
@@ -23,17 +24,43 @@ func ConnectViaGORM(config Config) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	sqlDb, err := db.DB()
-	if err != nil {
-		return nil, fmt.Errorf("unexpected db_DB(): %v", err)
+	stdSqlPool, err := db.DB()
+	if err != nil { // unreachable
+		return nil, fmt.Errorf("cannot get standard sql connection pool from gorm: %v", err)
 	}
-	if sqlDb != nil {
-		configConnectionsPool(sqlDb)
+	if stdSqlPool != nil {
+		configConnectionsPool(stdSqlPool)
 	}
 	return db, nil
 }
 
-// Connect initializes a new MySQL client (sent a Ping)
+// LoopCheckIfSqlPoolHangThenPanic panic if it cannot ping the SQL server for
+// 20 times (in 10 minutes), this func is an infinite loop, must be called in
+// a goroutine. USE WITH CAUTION: a functional but slow database can trigger panic.
+func LoopCheckIfSqlPoolHangThenPanic(gormObj *gorm.DB) {
+	stdSqlPool, err := gormObj.DB()
+	if err != nil { // unreachable
+		panic(fmt.Sprintf("cannot get standard sql connection pool from gorm: %v", err))
+	}
+	nFailPing := 0
+	for i := 0; true; i++ {
+		time.Sleep(30 * time.Second)
+		ctxPing, cclPing := context.WithTimeout(context.Background(), 30*time.Second)
+		err = stdSqlPool.PingContext(ctxPing)
+		cclPing()
+		if err != nil {
+			nFailPing += 1
+		} else {
+			nFailPing = 0
+		}
+		if nFailPing > 20 {
+			panic("stdSqlPool is hanging, this program is about to restart")
+		}
+	}
+}
+
+// Connect initializes a new MySQL client (sent a Ping),
+// DEPRECATED, use ConnectViaGORM then call DB() instead
 func Connect(config Config) (*sql.DB, error) {
 	if config.Host == "" || config.Port == "" {
 		return nil, errors.New("empty config")

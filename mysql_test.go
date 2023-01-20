@@ -116,6 +116,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(fmt.Sprintf("error ConnectViaGORM: %v", err))
 	}
+	go LoopCheckIfSqlPoolHangThenPanic(db)
 	repo0 = myRepo{DB: db}
 	os.Exit(m.Run())
 }
