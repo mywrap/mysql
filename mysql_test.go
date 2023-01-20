@@ -4,6 +4,7 @@ import (
 	cryptoRand "crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -12,11 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
-// These test need a MySQL server to run
+// these test need a MySQL server to run
 
 // create a struct that wraps database client so we can add methods to it
 type myRepo struct{ DB *gorm.DB }
@@ -24,7 +26,7 @@ type myRepo struct{ DB *gorm.DB }
 func (r myRepo) CreateClient(cli testClient) error {
 	qr := r.DB.Create(&cli)
 	if qr.Error != nil {
-		return fmt.Errorf("error create client: %v", qr.Error)
+		return fmt.Errorf("error create client: %w", qr.Error)
 	}
 	return nil
 }
@@ -40,7 +42,7 @@ func (r myRepo) CreateClientsIgnore(clients []testClient) (int64, error) {
 	return qr.RowsAffected, nil
 }
 
-// batch insert, update duplicate key
+// batch insert, update some columns if primary key existed
 func (r myRepo) CreateClientsUpsert(clients []testClient) error {
 	qr := r.DB.Debug().
 		Clauses(clause.OnConflict{
@@ -126,11 +128,11 @@ func TestConfig_ToDataSourceURL(t *testing.T) {
 func TestMysql(t *testing.T) {
 	// init: create tables
 
-	mErr := repo0.DB.Debug().AutoMigrate(&testClient{})
+	mErr := repo0.DB.AutoMigrate(&testClient{})
 	if mErr != nil {
 		t.Error(mErr)
 	}
-	mErr = repo0.DB.Debug().AutoMigrate(&testProject{})
+	mErr = repo0.DB.AutoMigrate(&testProject{})
 	if mErr != nil {
 		t.Error(mErr)
 	}
@@ -140,7 +142,17 @@ func TestMysql(t *testing.T) {
 	user1 := "tungdt"
 	cli1 := testClient{Username: user1, Phone: "84396xxx527",
 		FullName: "Đào Thanh Tùng", DateOfBirth: "1991-08-20"}
-	repo0.CreateClient(cli1)
+	err := repo0.CreateClient(cli1)
+	if err != nil {
+		var mysqlErr *mysql.MySQLError
+		isExpectedErrType := errors.As(err, &mysqlErr)
+		if isExpectedErrType && mysqlErr.Number == 1062 {
+			t.Logf("mysqlErr: %+v", mysqlErr)
+			// expected error
+		} else {
+			t.Errorf("error CreateClient: %#v", err)
+		}
+	}
 
 	repo0.CreateClient(testClient{Username: "landt",
 		FullName: "Đào Thị Lán", Phone: "097xxx8543"})
@@ -150,7 +162,7 @@ func TestMysql(t *testing.T) {
 	repo0.CreateProject(testProject{Name: "prj2", ClientUsername: user1,
 		Deadline: time.Unix(0, 0), ValueVNDs: 30000})
 
-	err := repo0.CreateProject(testProject{Name: "prj3",
+	err = repo0.CreateProject(testProject{Name: "prj3",
 		ClientUsername: "invalidCli", Deadline: time.Unix(0, 0)})
 	if err == nil ||
 		!strings.Contains(err.Error(), "constraint fail") {
@@ -161,7 +173,7 @@ func TestMysql(t *testing.T) {
 	if err != nil {
 		t.Errorf("error ReadProject: %v", err)
 	}
-	t.Logf("read project: client: %#v, project: %#v", row.Client, row)
+	//t.Logf("read project: client: %#v, project: %#v", row.Client, row)
 	if row.Client.DateOfBirth != cli1.DateOfBirth {
 		t.Errorf("join row: real: %v, expected: %v",
 			row.Client.DateOfBirth, cli1.DateOfBirth)
@@ -199,12 +211,13 @@ func TestMysql(t *testing.T) {
 			t.Errorf("error rows Scan: %v", err)
 			continue
 		}
-		t.Logf("client: %v, %v, %v", username, full_name, phone)
+		//t.Logf("client: %v, %v, %v", username, full_name, phone)
 	}
 	if nRows < 2 {
-		t.Errorf("nRows: real: %v, expected: 2", nRows)
+		t.Errorf("error nRows: real: %v, expected: 2", nRows)
 	}
 }
+
 func genUUID() string {
 	b := make([]byte, 16)
 	_, _ = cryptoRand.Read(b)
@@ -232,14 +245,16 @@ func TestGormV2(t *testing.T) {
 
 	dupCli2 := testClient{
 		Username:     "testBatchDupIdUpsert",
-		Phone:        "old",
+		Phone:        "oldPhone",
+		Email:        "oldEmail",
 		LastModified: time.Now().Format(time.RFC3339Nano),
 	}
+	repo0.DB.Delete(testClient{Username: dupCli2.Username})
 	repo0.CreateClient(dupCli2)
 	newValDupCli2 := time.Now().Format(time.RFC3339Nano) + "new"
 	err2 := repo0.CreateClientsUpsert([]testClient{
 		{Username: "testBatchId10_" + genUUID()},
-		{Username: dupCli2.Username, Phone: "old", LastModified: newValDupCli2},
+		{Username: dupCli2.Username, Phone: "newPhone", Email: "newEmail", LastModified: newValDupCli2},
 		{Username: "testBatchId12_" + genUUID()},
 	})
 	if err2 != nil {
@@ -252,8 +267,8 @@ func TestGormV2(t *testing.T) {
 	if loadedCli2.LastModified != newValDupCli2 {
 		t.Error("batch upsert fail: not update")
 	}
-	if loadedCli2.Phone != "old" {
-		t.Error("batch upsert fail: update wrong column")
+	if loadedCli2.Email != "oldEmail" {
+		t.Errorf("batch upsert fail: update wrong column Email: %v", loadedCli2.Email)
 	}
 }
 
